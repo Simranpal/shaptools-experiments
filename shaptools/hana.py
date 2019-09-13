@@ -17,6 +17,8 @@ from __future__ import print_function
 import logging
 import fileinput
 import re
+import time
+import platform
 
 from shaptools import shell
 
@@ -54,7 +56,7 @@ SR_STATUS = {
 }
 
 
-class HanaInstance:
+class HanaInstance(object):
     """
     SAP HANA instance implementation
 
@@ -62,15 +64,21 @@ class HanaInstance:
         sid (str): SAP HANA sid to enable
         inst (str): SAP HANA instance number
         password (str): HANA instance password
+        remote_host (str, opt): Remote host where the command will be executed
     """
 
     PATH = '/usr/sap/{sid}/HDB{inst}/'
-    INSTALL_EXEC = '{software_path}/DATA_UNITS/HDB_LCM_LINUX_X86_64/hdblcm'
+    INSTALL_EXEC = '{software_path}/DATA_UNITS/HDB_LCM_LINUX_{platform}/hdblcm'
+    SUPPORTED_PLATFORMS = [
+        'x86_64', 'ppc64le'
+    ]
     # SID is usualy written uppercased, but the OS user is always created lower case.
     HANAUSER = '{sid}adm'.lower()
     SYNCMODES = ['sync', 'syncmem', 'async']
+    SUCCESSFULLY_REGISTERED = 0 # Node correctly registered as secondary node
+    SSFS_DIFFERENT_ERROR = 149 # ssfs files are different in the two nodes error return code
 
-    def __init__(self, sid, inst, password):
+    def __init__(self, sid, inst, password, **kwargs):
         # Force instance nr always with 2 positions.
         inst = '{:0>2}'.format(inst)
         if not all(isinstance(i, basestring) for i in [sid, inst, password]):
@@ -81,6 +89,19 @@ class HanaInstance:
         self.sid = sid
         self.inst = inst
         self._password = password
+        self.remote_host = kwargs.get('remote_host', None)
+
+    @classmethod
+    def get_platform(cls):
+        """
+        Get the SAP HANA installation folder by platform
+        """
+        current_platform = platform.machine()
+        logger = logging.getLogger('__name__')
+        logger.info('current platform is %s', current_platform)
+        if current_platform not in cls.SUPPORTED_PLATFORMS:
+            raise ValueError('not supported platform: {}'.format(current_platform))
+        return current_platform.upper()
 
     def _run_hana_command(self, cmd, exception=True):
         """
@@ -96,7 +117,7 @@ class HanaInstance:
         """
         #TODO: Add absolute paths to hana commands using sid and inst number
         user = self.HANAUSER.format(sid=self.sid)
-        result = shell.execute_cmd(cmd, user, self._password)
+        result = shell.execute_cmd(cmd, user, self._password, self.remote_host)
 
         if exception and result.returncode != 0:
             raise HanaError('Error running hana command: {}'.format(result.cmd))
@@ -112,7 +133,7 @@ class HanaInstance:
         """
         user = self.HANAUSER.format(sid=self.sid)
         try:
-            result = shell.execute_cmd('HDB info', user, self._password)
+            result = shell.execute_cmd('HDB info', user, self._password, self.remote_host)
             return not result.returncode
         except EnvironmentError as err: #FileNotFoundError is not compatible with python2
             self._logger.error(err)
@@ -142,7 +163,7 @@ class HanaInstance:
 
     @classmethod
     def create_conf_file(
-            cls, software_path, conf_file, root_user, root_password):
+            cls, software_path, conf_file, root_user, root_password, remote_host=None):
         """
         Create SAP HANA configuration file
 
@@ -151,18 +172,21 @@ class HanaInstance:
             conf_file (str): Path where configuration file will be created
             root_user (str): Root user name
             root_password (str): Root user password
+            remote_host (str, opt): Remote host where the command will be executed
+
         """
-        executable = cls.INSTALL_EXEC.format(software_path=software_path)
+        platform_folder = cls.get_platform()
+        executable = cls.INSTALL_EXEC.format(software_path=software_path, platform=platform_folder)
         cmd = '{executable} --action=install '\
             '--dump_configfile_template={conf_file}'.format(
                 executable=executable, conf_file=conf_file)
-        result = shell.execute_cmd(cmd, root_user, root_password)
+        result = shell.execute_cmd(cmd, root_user, root_password, remote_host)
         if result.returncode:
             raise HanaError('SAP HANA configuration file creation failed')
         return conf_file
 
     @classmethod
-    def install(cls, software_path, conf_file, root_user, password):
+    def install(cls, software_path, conf_file, root_user, password, remote_host=None):
         """
         Install SAP HANA platform providing a configuration file
 
@@ -171,13 +195,15 @@ class HanaInstance:
             conf_file (str): Path to the configuration file
             root_user (str): Root user name
             password (str): Root user password
+            remote_host (str, opt): Remote host where the command will be executed
         """
         # TODO: mount partition if needed
         # TODO: do some integrity check stuff
-        executable = cls.INSTALL_EXEC.format(software_path=software_path)
+        platform_folder = cls.get_platform()
+        executable = cls.INSTALL_EXEC.format(software_path=software_path, platform=platform_folder)
         cmd = '{executable} -b --configfile={conf_file}'.format(
             executable=executable, conf_file=conf_file)
-        result = shell.execute_cmd(cmd, root_user, password)
+        result = shell.execute_cmd(cmd, root_user, password, remote_host)
         if result.returncode:
             raise HanaError('SAP HANA installation failed')
 
@@ -188,7 +214,7 @@ class HanaInstance:
         cmd = '{installation_folder}/{sid}/hdblcm/hdblcm '\
             '--uninstall -b'.format(
                 installation_folder=installation_folder, sid=self.sid.upper())
-        result = shell.execute_cmd(cmd, root_user, password)
+        result = shell.execute_cmd(cmd, root_user, password, self.remote_host)
         if result.returncode:
             raise HanaError('SAP HANA uninstallation failed')
 
@@ -201,7 +227,7 @@ class HanaInstance:
         """
         cmd = 'pidof hdb.sap{sid}_HDB{inst}'.format(
             sid=self.sid.upper(), inst=self.inst)
-        result = shell.execute_cmd(cmd)
+        result = self._run_hana_command(cmd, exception=False)
         return not result.returncode
 
     # pylint:disable=W1401
@@ -297,9 +323,34 @@ class HanaInstance:
         cmd = 'hdbnsutil -sr_disable'
         self._run_hana_command(cmd)
 
+    def copy_ssfs_files(self, remote_host, primary_pass):
+        """
+        Copy the ssfs data and key files to the secondary node
+
+        Args:
+            primary_pass: Password of the primary node
+        """
+        user = self.HANAUSER.format(sid=self.sid)
+        sid_upper = self.sid.upper()
+        cmd = \
+            "scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "\
+            "{user}@{remote_host}:/usr/sap/{sid}/SYS/global/security/rsecssfs/data/SSFS_{sid}.DAT "\
+            "/usr/sap/{sid}/SYS/global/security/rsecssfs/data/SSFS_{sid}.DAT".format(
+                user=user, remote_host=remote_host, sid=sid_upper)
+        cmd = shell.create_ssh_askpass(primary_pass, cmd)
+        self._run_hana_command(cmd)
+
+        cmd = \
+            "scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "\
+            "{user}@{remote_host}:/usr/sap/{sid}/SYS/global/security/rsecssfs/key/SSFS_{sid}.KEY "\
+            "/usr/sap/{sid}/SYS/global/security/rsecssfs/key/SSFS_{sid}.KEY".format(
+                user=user, remote_host=remote_host, sid=sid_upper)
+        cmd = shell.create_ssh_askpass(primary_pass, cmd)
+        self._run_hana_command(cmd)
+
     def sr_register_secondary(
             self, name, remote_host, remote_instance,
-            replication_mode, operation_mode):
+            replication_mode, operation_mode, **kwargs):
         """
         Register SAP HANA system replication as secondary node
 
@@ -309,12 +360,39 @@ class HanaInstance:
             remote_instance (str): Primary node instance
             replication_mode (str): Replication mode
             operation_mode (str): Operation mode
+            primary_password (str, optional): Password from node where system
+                replicationis is enabled. Current node password will be used by
+                default (xxxadm sap user password)
+            timeout (int, optional): Timeout to try to register the node in seconds
+            interval (int, optional): Retry interval in seconds
+
         """
+        timeout = kwargs.get('timeout', 0)
+        interval = kwargs.get('interval', 5)
+        primary_pass = kwargs.get('primary_password', self._password)
+
         remote_instance = '{:0>2}'.format(remote_instance)
         cmd = 'hdbnsutil -sr_register --name={} --remoteHost={} '\
               '--remoteInstance={} --replicationMode={} --operationMode={}'.format(
                   name, remote_host, remote_instance, replication_mode, operation_mode)
-        self._run_hana_command(cmd)
+
+        current_time = time.clock()
+        current_timeout = current_time + timeout
+        while current_time <= current_timeout:
+            return_code = self._run_hana_command(cmd, False).returncode
+            if return_code == self.SUCCESSFULLY_REGISTERED:
+                break
+            elif return_code == self.SSFS_DIFFERENT_ERROR:
+                self.copy_ssfs_files(remote_host, primary_pass)
+                self._run_hana_command(cmd)
+                break
+            time.sleep(interval)
+            current_time = time.clock()
+            continue
+        else:
+            raise HanaError(
+                'System replication registration process failed after {} seconds'.format(
+                    timeout))
 
     def sr_unregister_secondary(self, primary_name):
         """
@@ -510,7 +588,7 @@ class HanaInstance:
 
         key_name or user_name/user_password parameters must be used
         Args:
-            ini_parameter_values(list): List containing HANA parameter details
+            ini_parameter_values (list): List containing HANA parameter details
             where each entry is a dictionary like below:
             {'section_name':'name', 'parameter_name':'param_name', 'parameter_value':'value'}
                 section_name (str): Section name of parameter in ini file
@@ -536,10 +614,11 @@ class HanaInstance:
         user_name = kwargs.get('user_name', None)
         user_password = kwargs.get('user_password', None)
 
-        self._manage_ini_file(parameter_str=parameter_str, database=database,
-                              file_name=file_name, layer=layer, layer_name=layer_name,
-                              set_value=True, reconfig=reconfig, key_name=key_name,
-                              user_name=user_name, user_password=user_password)
+        self._manage_ini_file(
+            parameter_str=parameter_str, database=database,
+            file_name=file_name, layer=layer, layer_name=layer_name,
+            set_value=True, reconfig=reconfig, key_name=key_name,
+            user_name=user_name, user_password=user_password)
 
     def unset_ini_parameter(
             self, ini_parameter_names, database, file_name, layer,
@@ -576,7 +655,8 @@ class HanaInstance:
         user_name = kwargs.get('user_name', None)
         user_password = kwargs.get('user_password', None)
 
-        self._manage_ini_file(parameter_str=parameter_str, database=database,
-                              file_name=file_name, layer=layer, layer_name=layer_name,
-                              set_value=False, reconfig=reconfig, key_name=key_name,
-                              user_name=user_name, user_password=user_password)
+        self._manage_ini_file(
+            parameter_str=parameter_str, database=database,
+            file_name=file_name, layer=layer, layer_name=layer_name,
+            set_value=False, reconfig=reconfig, key_name=key_name,
+            user_name=user_name, user_password=user_password)

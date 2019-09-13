@@ -78,6 +78,26 @@ class TestHana(unittest.TestCase):
             'provided sid, inst and password parameters must be str type' in
             str(err.exception))
 
+    @mock.patch('platform.machine')
+    def test_get_platform(self, mock_machine):
+        mock_machine.return_value = 'x86_64'
+        machine = hana.HanaInstance.get_platform()
+        self.assertEqual(machine, 'X86_64')
+        mock_machine.assert_called_once_with()
+
+        mock_machine.reset_mock()
+        mock_machine.return_value = 'ppc64le'
+        machine = hana.HanaInstance.get_platform()
+        self.assertEqual(machine, 'PPC64LE')
+        mock_machine.assert_called_once_with()
+
+    @mock.patch('platform.machine')
+    def test_get_platform_error(self, mock_machine):
+        mock_machine.return_value = 'ppc64'
+        with self.assertRaises(ValueError) as err:
+            hana.HanaInstance.get_platform()
+        self.assertTrue('not supported platform: {}'.format('ppc64') in str(err.exception))
+        mock_machine.assert_called_once_with()
 
     @mock.patch('shaptools.shell.execute_cmd')
     def test_run_hana_command(self, mock_execute):
@@ -88,7 +108,7 @@ class TestHana(unittest.TestCase):
 
         result = self._hana._run_hana_command('test command')
 
-        mock_execute.assert_called_once_with('test command', 'prdadm', 'pass')
+        mock_execute.assert_called_once_with('test command', 'prdadm', 'pass', None)
         self.assertEqual(proc_mock, result)
 
     @mock.patch('shaptools.shell.execute_cmd')
@@ -101,7 +121,7 @@ class TestHana(unittest.TestCase):
         with self.assertRaises(hana.HanaError) as err:
             self._hana._run_hana_command('test command')
 
-        mock_execute.assert_called_once_with('test command', 'prdadm', 'pass')
+        mock_execute.assert_called_once_with('test command', 'prdadm', 'pass', None)
         self.assertTrue(
             'Error running hana command: {}'.format(
                 'updated command') in str(err.exception))
@@ -114,7 +134,7 @@ class TestHana(unittest.TestCase):
 
         result = self._hana.is_installed()
 
-        mock_execute.assert_called_once_with('HDB info', 'prdadm', 'pass')
+        mock_execute.assert_called_once_with('HDB info', 'prdadm', 'pass', None)
 
         self.assertTrue(result)
 
@@ -126,7 +146,7 @@ class TestHana(unittest.TestCase):
 
         result = self._hana.is_installed()
 
-        mock_execute.assert_called_once_with('HDB info', 'prdadm', 'pass')
+        mock_execute.assert_called_once_with('HDB info', 'prdadm', 'pass', None)
 
         self.assertFalse(result)
 
@@ -140,7 +160,7 @@ class TestHana(unittest.TestCase):
 
         result = self._hana.is_installed()
 
-        mock_execute.assert_called_once_with('HDB info', 'prdadm', 'pass')
+        mock_execute.assert_called_once_with('HDB info', 'prdadm', 'pass', None)
 
         self.assertFalse(result)
         logger.assert_called_once_with(error)
@@ -159,67 +179,80 @@ class TestHana(unittest.TestCase):
             **{'sid': 'PRD', 'password': 'Qwerty1234', 'system_user_password': 'Qwerty1234'})
         self.assertTrue(filecmp.cmp(pwd+'/support/modified.conf', conf_file))
 
+    @mock.patch('shaptools.hana.HanaInstance.get_platform')
     @mock.patch('shaptools.shell.execute_cmd')
-    def test_create_conf_file(self, mock_execute):
+    def test_create_conf_file(self, mock_execute, mock_get_platform):
         proc_mock = mock.Mock()
         proc_mock.returncode = 0
         mock_execute.return_value = proc_mock
+        mock_get_platform.return_value = 'my_arch'
 
         conf_file = hana.HanaInstance.create_conf_file(
             'software_path', 'conf_file.conf', 'root', 'pass')
 
         mock_execute.assert_called_once_with(
-            'software_path/DATA_UNITS/HDB_LCM_LINUX_X86_64/hdblcm '
+            'software_path/DATA_UNITS/HDB_LCM_LINUX_my_arch/hdblcm '
             '--action=install --dump_configfile_template={conf_file}'.format(
-                conf_file='conf_file.conf'), 'root', 'pass')
+                conf_file='conf_file.conf'), 'root', 'pass', None)
+        mock_get_platform.assert_called_once_with()
         self.assertEqual('conf_file.conf', conf_file)
 
+    @mock.patch('shaptools.hana.HanaInstance.get_platform')
     @mock.patch('shaptools.shell.execute_cmd')
-    def test_create_conf_file_error(self, mock_execute):
+    def test_create_conf_file_error(self, mock_execute, mock_get_platform):
         proc_mock = mock.Mock()
         proc_mock.returncode = 1
         mock_execute.return_value = proc_mock
+        mock_get_platform.return_value = 'my_arch'
 
         with self.assertRaises(hana.HanaError) as err:
             hana.HanaInstance.create_conf_file(
                 'software_path', 'conf_file.conf', 'root', 'pass')
 
         mock_execute.assert_called_once_with(
-            'software_path/DATA_UNITS/HDB_LCM_LINUX_X86_64/hdblcm '
+            'software_path/DATA_UNITS/HDB_LCM_LINUX_my_arch/hdblcm '
             '--action=install --dump_configfile_template={conf_file}'.format(
-                conf_file='conf_file.conf'), 'root', 'pass')
+                conf_file='conf_file.conf'), 'root', 'pass', None)
+
+        mock_get_platform.assert_called_once_with()
 
         self.assertTrue(
             'SAP HANA configuration file creation failed' in str(err.exception))
 
+    @mock.patch('shaptools.hana.HanaInstance.get_platform')
     @mock.patch('shaptools.shell.execute_cmd')
-    def test_install(self, mock_execute):
+    def test_install(self, mock_execute, mock_get_platform):
         proc_mock = mock.Mock()
         proc_mock.returncode = 0
         mock_execute.return_value = proc_mock
+        mock_get_platform.return_value = 'my_arch'
 
         hana.HanaInstance.install(
             'software_path', 'conf_file.conf', 'root', 'pass')
 
         mock_execute.assert_called_once_with(
-            'software_path/DATA_UNITS/HDB_LCM_LINUX_X86_64/hdblcm '
+            'software_path/DATA_UNITS/HDB_LCM_LINUX_my_arch/hdblcm '
             '-b --configfile={conf_file}'.format(
-                conf_file='conf_file.conf'), 'root', 'pass')
+                conf_file='conf_file.conf'), 'root', 'pass', None)
+        mock_get_platform.assert_called_once_with()
 
+    @mock.patch('shaptools.hana.HanaInstance.get_platform')
     @mock.patch('shaptools.shell.execute_cmd')
-    def test_install_error(self, mock_execute):
+    def test_install_error(self, mock_execute, mock_get_platform):
         proc_mock = mock.Mock()
         proc_mock.returncode = 1
         mock_execute.return_value = proc_mock
+        mock_get_platform.return_value = 'my_arch'
 
         with self.assertRaises(hana.HanaError) as err:
             hana.HanaInstance.install(
                 'software_path', 'conf_file.conf', 'root', 'pass')
 
         mock_execute.assert_called_once_with(
-            'software_path/DATA_UNITS/HDB_LCM_LINUX_X86_64/hdblcm '
+            'software_path/DATA_UNITS/HDB_LCM_LINUX_my_arch/hdblcm '
             '-b --configfile={conf_file}'.format(
-                conf_file='conf_file.conf'), 'root', 'pass')
+                conf_file='conf_file.conf'), 'root', 'pass', None)
+        mock_get_platform.assert_called_once_with()
 
         self.assertTrue(
             'SAP HANA installation failed' in str(err.exception))
@@ -233,7 +266,7 @@ class TestHana(unittest.TestCase):
         self._hana.uninstall('root', 'pass')
 
         mock_execute.assert_called_once_with(
-            '/hana/shared/PRD/hdblcm/hdblcm --uninstall -b', 'root', 'pass')
+            '/hana/shared/PRD/hdblcm/hdblcm --uninstall -b', 'root', 'pass', None)
 
     @mock.patch('shaptools.shell.execute_cmd')
     def test_uninstall_error(self, mock_execute):
@@ -245,20 +278,19 @@ class TestHana(unittest.TestCase):
             self._hana.uninstall('root', 'pass', 'path')
 
         mock_execute.assert_called_once_with(
-            'path/PRD/hdblcm/hdblcm --uninstall -b', 'root', 'pass')
+            'path/PRD/hdblcm/hdblcm --uninstall -b', 'root', 'pass', None)
 
         self.assertTrue(
             'SAP HANA uninstallation failed' in str(err.exception))
 
     @mock.patch('shaptools.shell.execute_cmd')
     def test_is_running(self, mock_execute):
-        proc_mock = mock.Mock()
-        proc_mock.returncode = 0
-        mock_execute.return_value = proc_mock
-
+        mock_command = mock.Mock()
+        self._hana._run_hana_command = mock_command
+        mock_result = mock.Mock(returncode=0)
+        self._hana._run_hana_command.return_value = mock_result
         result = self._hana.is_running()
-
-        mock_execute.assert_called_once_with('pidof hdb.sapPRD_HDB00')
+        mock_command.assert_called_once_with('pidof hdb.sapPRD_HDB00', exception=False)
         self.assertTrue(result)
 
     @mock.patch('subprocess.Popen')
@@ -342,14 +374,124 @@ class TestHana(unittest.TestCase):
         self._hana.sr_disable_primary()
         mock_command.assert_called_once_with('hdbnsutil -sr_disable')
 
-    def test_register(self):
-        mock_command = mock.Mock()
-        self._hana._run_hana_command = mock_command
+    @mock.patch('shaptools.shell.create_ssh_askpass')
+    def test_copy_ssfs_files(self, mock_sshpass):
+        mock_sshpass.side_effect = ['cmd1', 'cmd2']
+        self._hana._run_hana_command = mock.Mock()
+        self._hana.copy_ssfs_files('host', 'prim_pass')
+        mock_sshpass.assert_has_calls([
+            mock.call(
+                'prim_pass', "scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "\
+                '{user}@{remote_host}:/usr/sap/{sid}/SYS/global/security/rsecssfs/data/SSFS_{sid}.DAT '\
+                '/usr/sap/{sid}/SYS/global/security/rsecssfs/data/SSFS_{sid}.DAT'.format(
+                    user='prdadm', remote_host='host', sid='PRD')),
+            mock.call(
+                'prim_pass', 'scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '\
+                '{user}@{remote_host}:/usr/sap/{sid}/SYS/global/security/rsecssfs/key/SSFS_{sid}.KEY '\
+                '/usr/sap/{sid}/SYS/global/security/rsecssfs/key/SSFS_{sid}.KEY'.format(
+                    user='prdadm', remote_host='host', sid='PRD')),
+        ])
+        self._hana._run_hana_command.assert_has_calls([
+            mock.call('cmd1'),
+            mock.call('cmd2'),
+        ])
+
+
+    @mock.patch('time.clock')
+    def test_register_basic(self, mock_clock):
+        mock_clock.return_value = 0
+        self._hana._run_hana_command = mock.Mock()
+        result_mock = mock.Mock(returncode=0)
+        self._hana._run_hana_command.return_value = result_mock
         self._hana.sr_register_secondary('test', 'host', 1, 'sync', 'ops')
-        mock_command.assert_called_once_with(
+        self._hana._run_hana_command.assert_called_once_with(
             'hdbnsutil -sr_register --name={} --remoteHost={} '\
             '--remoteInstance={} --replicationMode={} --operationMode={}'.format(
-            'test', 'host', '01', 'sync', 'ops'))
+            'test', 'host', '01', 'sync', 'ops'), False)
+
+    @mock.patch('time.clock')
+    def test_register_copy_ssfs(self, mock_clock):
+        mock_clock.return_value = 0
+        self._hana._run_hana_command = mock.Mock()
+        result_mock = mock.Mock(returncode=149)
+        self._hana.copy_ssfs_files = mock.Mock()
+        self._hana._run_hana_command.return_value = result_mock
+        self._hana.sr_register_secondary('test', 'host', 1, 'sync', 'ops', primary_pass='pass')
+        self._hana._run_hana_command.assert_has_calls([
+            mock.call(
+                'hdbnsutil -sr_register --name={} --remoteHost={} '\
+                '--remoteInstance={} --replicationMode={} --operationMode={}'.format(
+                'test', 'host', '01', 'sync', 'ops'), False),
+            mock.call(
+                'hdbnsutil -sr_register --name={} --remoteHost={} '\
+                '--remoteInstance={} --replicationMode={} --operationMode={}'.format(
+                'test', 'host', '01', 'sync', 'ops'))
+        ])
+        self._hana.copy_ssfs_files.assert_called_once_with('host', 'pass')
+
+    @mock.patch('time.clock')
+    @mock.patch('time.sleep')
+    def test_register_loop(self, mock_sleep, mock_clock):
+        mock_clock.side_effect = [0, 1, 2, 3]
+        self._hana._run_hana_command = mock.Mock()
+        result_mock1 = mock.Mock(returncode=1)
+        result_mock2 = mock.Mock(returncode=1)
+        result_mock3 = mock.Mock(returncode=0)
+
+        self._hana._run_hana_command.side_effect = [result_mock1, result_mock2, result_mock3]
+
+        self._hana.sr_register_secondary('test', 'host', 1, 'sync', 'ops', timeout=5, interval=2)
+
+        self._hana._run_hana_command.assert_has_calls([
+            mock.call(
+                'hdbnsutil -sr_register --name={} --remoteHost={} '\
+                '--remoteInstance={} --replicationMode={} --operationMode={}'.format(
+                'test', 'host', '01', 'sync', 'ops'), False),
+            mock.call(
+                'hdbnsutil -sr_register --name={} --remoteHost={} '\
+                '--remoteInstance={} --replicationMode={} --operationMode={}'.format(
+                'test', 'host', '01', 'sync', 'ops'), False),
+            mock.call(
+                'hdbnsutil -sr_register --name={} --remoteHost={} '\
+                '--remoteInstance={} --replicationMode={} --operationMode={}'.format(
+                'test', 'host', '01', 'sync', 'ops'), False)
+        ])
+        mock_sleep.assert_has_calls([mock.call(2), mock.call(2)])
+
+    @mock.patch('time.clock')
+    @mock.patch('time.sleep')
+    def test_register_error(self, mock_sleep, mock_clock):
+        mock_clock.side_effect = [0, 1, 2, 3]
+        self._hana._run_hana_command = mock.Mock()
+        result_mock1 = mock.Mock(returncode=1)
+        result_mock2 = mock.Mock(returncode=1)
+        result_mock3 = mock.Mock(returncode=1)
+
+        self._hana._run_hana_command.side_effect = [result_mock1, result_mock2, result_mock3]
+
+        with self.assertRaises(hana.HanaError) as err:
+            self._hana.sr_register_secondary(
+                'test', 'host', 1, 'sync', 'ops', timeout=2, interval=2)
+
+        self.assertTrue(
+            'System replication registration process failed after {} seconds'.format(2) in
+            str(err.exception))
+
+        self._hana._run_hana_command.assert_has_calls([
+            mock.call(
+                'hdbnsutil -sr_register --name={} --remoteHost={} '\
+                '--remoteInstance={} --replicationMode={} --operationMode={}'.format(
+                'test', 'host', '01', 'sync', 'ops'), False),
+            mock.call(
+                'hdbnsutil -sr_register --name={} --remoteHost={} '\
+                '--remoteInstance={} --replicationMode={} --operationMode={}'.format(
+                'test', 'host', '01', 'sync', 'ops'), False),
+            mock.call(
+                'hdbnsutil -sr_register --name={} --remoteHost={} '\
+                '--remoteInstance={} --replicationMode={} --operationMode={}'.format(
+                'test', 'host', '01', 'sync', 'ops'), False)
+        ])
+        mock_sleep.assert_has_calls([mock.call(2), mock.call(2), mock.call(2)])
 
     def test_unregister(self):
         mock_command = mock.Mock()
@@ -507,7 +649,7 @@ class TestHana(unittest.TestCase):
             self._hana._run_hana_command.assert_called_once_with(
                 'HDBSettings.sh systemReplicationStatus.py', exception=False)
             self.assertEqual(status, {"status": expect})
-    
+
     def test_set_ini_parameter(self):
         mock_command = mock.Mock()
         self._hana._run_hana_command = mock_command
@@ -527,7 +669,7 @@ class TestHana(unittest.TestCase):
             '{ini_parameter_values};\\"'.format(
             hdbsql='hdbsql', db='db', file_name='global.ini', layer='SYSTEM',
             ini_parameter_values='(\'memorymanager\',\'global_allocation_limit\')=\'25000\''))
-    
+
     def test_set_ini_parameter_layer(self):
         mock_command = mock.Mock()
         self._hana._run_hana_command = mock_command
@@ -546,10 +688,10 @@ class TestHana(unittest.TestCase):
             '{hdbsql} -d {db} '\
             '\\"ALTER SYSTEM ALTER CONFIGURATION(\'{file_name}\', \'{layer}\', \'{layer_name}\') '
             'SET{ini_parameter_values};\\"'.format(
-            hdbsql='hdbsql', db='db', file_name='global.ini', 
+            hdbsql='hdbsql', db='db', file_name='global.ini',
             layer='HOST', layer_name='host01',
             ini_parameter_values='(\'memorymanager\',\'global_allocation_limit\')=\'25000\''))
-    
+
     def test_set_ini_parameter_reconfig(self):
         mock_command = mock.Mock()
         self._hana._run_hana_command = mock_command
@@ -570,7 +712,7 @@ class TestHana(unittest.TestCase):
             hdbsql='hdbsql', db='db', file_name='global.ini', layer='SYSTEM',
             ini_parameter_values='(\'memorymanager\',\'global_allocation_limit\')=\'25000\'',
             reconfig=' WITH RECONFIGURE'))
-    
+
     def test_unset_ini_parameter(self):
         mock_command = mock.Mock()
         self._hana._run_hana_command = mock_command
@@ -610,7 +752,7 @@ class TestHana(unittest.TestCase):
             '{ini_parameter_names};\\"'.format(
             hdbsql='hdbsql', db='db', file_name='global.ini', layer='HOST', layer_name='host01',
             ini_parameter_names='(\'memorymanager\',\'global_allocation_limit\')'))
-   
+
     def test_unset_ini_parameter_reconfig(self):
         mock_command = mock.Mock()
         self._hana._run_hana_command = mock_command
