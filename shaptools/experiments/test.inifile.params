@@ -1,0 +1,4 @@
+FQDN = var.ere
+nwUsers.sapDomain =
+NW_GetMasterPassword.masterPwd = Simran123
+sid = HA1
